@@ -106,6 +106,7 @@ class LlavaVid(lmms):
         add_time_instruction: bool = False,
         add_faster_video: bool = False,
         faster_token_stride: int = 10,
+        use_topk: bool = False,
         **kwargs,
     ) -> None:
         super().__init__()
@@ -126,6 +127,9 @@ class LlavaVid(lmms):
         self.pretrained = pretrained
         self.model_name = get_model_name_from_path(pretrained)
         self.video_decode_backend = video_decode_backend
+        self.use_topk = use_topk
+        if self.use_topk and self.video_decode_backend != "decord":
+            raise ValueError("use_topk=True currently requires video_decode_backend='decord'")
         # self._config = AutoConfig.from_pretrained(self.pretrained)
         self.overwrite = overwrite
         self.mm_resampler_type = mm_resampler_type
@@ -348,6 +352,20 @@ class LlavaVid(lmms):
 
         return spare_frames, frame_time, video_time
 
+    def load_video_topk(self, video_path, max_frames_num, frame_idx):
+        if max_frames_num == 0:
+            return np.zeros((1, 336, 336, 3)), "0.00s", 0
+        vr = VideoReader(video_path, ctx=cpu(0), num_threads=1)
+        total_frame_num = len(vr)
+        avg_fps = vr.get_avg_fps()
+        video_time = total_frame_num / avg_fps
+        selected_frame_idx = [int(idx) for idx in frame_idx[:max_frames_num]]
+        if not selected_frame_idx:
+            raise ValueError("use_topk=True requires a non-empty frame_idx list")
+        frame_time = ",".join([f"{idx / avg_fps:.2f}s" for idx in selected_frame_idx])
+        spare_frames = vr.get_batch(selected_frame_idx).asnumpy()
+        return spare_frames, frame_time, video_time
+
     def tok_decode(self, tokens):
         return self.tokenizer.decode(tokens)
 
@@ -453,12 +471,19 @@ class LlavaVid(lmms):
                 # for visual in visuals:
                 if len(visuals) == 1:
                     if self.video_decode_backend == "decord":
-                        video, frame_time, video_time = self.load_video(
-                            visuals[0],
-                            self.max_frames_num,
-                            self.fps,
-                            force_sample=self.force_sample,
-                        )
+                        if self.use_topk:
+                            video, frame_time, video_time = self.load_video_topk(
+                                visuals[0],
+                                self.max_frames_num,
+                                self.task_dict[task][split][doc_id]["frame_idx"],
+                            )
+                        else:
+                            video, frame_time, video_time = self.load_video(
+                                visuals[0],
+                                self.max_frames_num,
+                                self.fps,
+                                force_sample=self.force_sample,
+                            )
                     elif self.video_decode_backend == "pyav":
                         video, frame_time, video_time = read_video(
                             visuals[0],
