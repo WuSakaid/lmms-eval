@@ -112,12 +112,13 @@ def insert_subtitles_into_frames(frame_timestamps, subtitles, starting_timestamp
 
 
 def longvideobench_doc_to_text(doc, lmms_eval_specific_kwargs):
-    candidates = []
+    # candidates = []
 
-    for i in range(5):
-        candidate = doc.get(f"option{i}")
-        if candidate != "N/A":
-            candidates.append(candidate)
+    # for i in range(5):
+    #     candidate = doc.get(f"option{i}")
+    #     if candidate != "N/A":
+    #         candidates.append(candidate)
+    candidates = doc['candidates']
 
     question = doc["question"] + "\n" + "\n".join([". ".join([chr(ord("A") + i), candidate]) for i, candidate in enumerate(candidates)])
     pre_prompt = lmms_eval_specific_kwargs["pre_prompt"]
@@ -146,9 +147,9 @@ def longvideobench_doc_to_text(doc, lmms_eval_specific_kwargs):
         return f"{pre_prompt}{question}\n{post_prompt}"
 
 
-hf_home = os.getenv("HF_HOME", "~/.cache/huggingface/")
-base_cache_dir = os.path.expanduser(hf_home)
-
+# hf_home = os.getenv("HF_HOME", "~/.cache/huggingface/")
+# base_cache_dir = os.path.expanduser(hf_home)
+base_cache_dir = './datasets/'
 
 def longvideobench_doc_to_visual_v(doc):
     with open(Path(__file__).parent / "longvideobench_val_v.yaml", "r") as f:
@@ -213,6 +214,10 @@ def parse_multi_choice_response(response, all_choices, index2ans):
     index_ans = True
     ans_with_brack = False
     candidates = []
+
+    # if response:
+    #     candidates.append(random.choice(all_choices))
+
     for choice in all_choices:  # e.g., (A) (B) (C) (D)
         if f"({choice})" in response:
             candidates.append(choice)
@@ -229,11 +234,12 @@ def parse_multi_choice_response(response, all_choices, index2ans):
                 candidates.append(choice)
 
     # if all above doesn't get candidates, check if the content is larger than 5 tokens and try to parse the example
-    if len(candidates) == 0 and len(response.split()) > 5:
-        for index, ans in index2ans.items():
-            if ans.lower() in response.lower():
-                candidates.append(index)
-                index_ans = False  # it's content ans.
+    # if len(candidates) == 0 and len(response.split()) > 5:
+    #     for index, ans in index2ans.items():
+    #         # print('response:  ', response)
+    #         if ans.lower() in response.lower():
+    #             candidates.append(index)
+    #             index_ans = False  # it's content ans.
 
     if len(candidates) == 0:  # still not get answer, randomly choose one.
         pred_index = random.choice(all_choices)

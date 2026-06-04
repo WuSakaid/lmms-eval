@@ -376,7 +376,7 @@ def cli_evaluate_single(args: Union[argparse.Namespace, None] = None) -> None:
     evaluation_tracker_args = simple_parse_args_string(args.hf_hub_log_args)
     eval_logger.info(f"Evaluation tracker args: {evaluation_tracker_args}")
 
-    evaluation_tracker = EvaluationTracker(**evaluation_tracker_args)
+    evaluation_tracker = EvaluationTracker(**evaluation_tracker_args)  #related to save_result
 
     if args.predict_only:
         args.log_samples = True

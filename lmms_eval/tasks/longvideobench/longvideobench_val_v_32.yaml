@@ -1,15 +1,15 @@
 dataset_path: ./datasets/longvideobench
 dataset_kwargs:
-  data_files: {"validation" : lvb_val.json}
+  data_files: {"validation" : include_frame_idx_32.json}
   token: False
   cache_dir: longvideobench
   video: False
   force_download: False
   local_files_only: False
   # From_YouTube: True
-task: longvideobench_val_i
+task: longvideobench_val_v_32
 test_split: validation
-doc_to_visual: !function utils.longvideobench_doc_to_visual_i
+doc_to_visual: !function utils.longvideobench_doc_to_visual_v
 doc_to_text: !function utils.longvideobench_doc_to_text
 doc_to_target: "correct_choice"
 generation_kwargs:
@@ -26,5 +26,4 @@ lmms_eval_specific_kwargs:
   default:
     pre_prompt: ""
     post_prompt: "Answer with the option's letter from the given choices directly.\n"
-    insert_interleave_subtitles: True
-    
+  

@@ -15,8 +15,10 @@ from lmms_eval.api.instance import Instance
 from lmms_eval.api.model import lmms
 from lmms_eval.api.registry import register_model
 
+
 try:
     from qwen_vl_utils import process_vision_info
+    from .model_utils.qwen2_load_video import process_vision_info_frame_idx
 except ImportError:
     eval_logger.warning("Failed to import qwen_vl_utils; Please install it via `pip install qwen-vl-utils`")
 
@@ -36,12 +38,17 @@ class Qwen2_VL(lmms):
         batch_size: Optional[Union[int, str]] = 1,
         use_cache=True,
         use_flash_attention_2: Optional[bool] = True,
+        nframes=32,
+        use_topk=False,
         **kwargs,
     ) -> None:
         super().__init__()
         # Do not use kwargs for now
         assert kwargs == {}, f"Unexpected kwargs: {kwargs}"
 
+        self.nframes = nframes
+        self.use_topk = use_topk
+        
         accelerator = Accelerator()
         if accelerator.num_processes > 1:
             self._device = torch.device(f"cuda:{accelerator.local_process_index}")
@@ -199,7 +206,7 @@ class Qwen2_VL(lmms):
                         first_frame = vr[0].asnumpy()
                         height, width = first_frame.shape[:2]
                         max_pixels = height * width
-                        message.append({"role": "user", "content": [{"type": "video", "video": visual, "max_pixels": max_pixels}, {"type": "text", "text": context}]})
+                        message.append({"role": "user", "content": [{"type": "video", "video": visual, "max_pixels": max_pixels, "nframes" : self.nframes}, {"type": "text", "text": context}]})
                     elif isinstance(visual, Image.Image):  # Single image
                         base64_image = visual.convert("RGB")
                         buffer = BytesIO()
@@ -225,7 +232,14 @@ class Qwen2_VL(lmms):
                 messages.append(message)
 
             texts = [self.processor.apply_chat_template(msg, tokenize=False, add_generation_prompt=True) for msg in messages]
-            image_inputs, video_inputs = process_vision_info(messages)
+            if self.use_topk:
+                frame_idx = self.task_dict[task][split][doc_id[0]]['frame_idx']
+                if len(frame_idx) >= self.nframes:
+                    image_inputs, video_inputs = process_vision_info_frame_idx(messages, frame_idx, self.nframes)
+                else:
+                    image_inputs, video_inputs = process_vision_info(messages)
+            else:
+                image_inputs, video_inputs = process_vision_info(messages)
             inputs = self.processor(text=texts, images=image_inputs, videos=video_inputs, padding=True, return_tensors="pt")
 
             if self.device_map == "auto":

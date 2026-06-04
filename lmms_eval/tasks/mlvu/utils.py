@@ -13,13 +13,12 @@ import yaml
 from loguru import logger as eval_logger
 
 from lmms_eval.tasks._task_utils.file_utils import generate_submission_file
-
-TASK_TYPES = ["TR", "AR", "VS", "NQA", "ER", "PQA", "SSC", "AO", "AC"]
-
-
-hf_home = os.getenv("HF_HOME", "./~/.cache/huggingface")
-base_cache_dir = os.path.expanduser(hf_home)
-
+# TASK_TYPES = ["TR", "AR", "VS", "NQA", "ER", "PQA", "SSC", "AO", "AC"]
+TASK_TYPES = ["anomaly_reco", "count", "ego", "needle", "order", "plotQA", "topic_reasoning"]
+# hf_home = os.getenv("HF_HOME", "./~/.cache/huggingface")
+# base_cache_dir = os.path.expanduser(hf_home)
+workspace_root = Path(__file__).resolve().parents[4]
+base_cache_dir = workspace_root / "datasets"
 with open(Path(__file__).parent / "mlvu.yaml", "r") as f:
     raw_data = f.readlines()
     safe_data = []
@@ -31,32 +30,62 @@ cache_name = yaml.safe_load("".join(safe_data))["dataset_kwargs"]["cache_dir"]
 
 
 def mlvu_doc_to_visual(doc):
-    cache_dir = os.path.join(base_cache_dir, cache_name)
-    video_path = doc["video_name"]
-    video_path = os.path.join(cache_dir, video_path)
-    if os.path.exists(video_path):
-        video_path = video_path
-    else:
-        sys.exit(f"video path:{video_path} does not exist, please check")
-    return [video_path]
+    video_name = doc.get("video_name")
+
+    video_file = Path(video_name)
+    if video_file.is_absolute() and video_file.exists():
+        return [str(video_file)]
+
+    cache_dirs = [base_cache_dir / cache_name, base_cache_dir / "MLVU"]
+    source_stem = Path(doc.get("source_file", "")).stem
+    candidate_paths = []
+    for cache_dir in cache_dirs:
+        candidate_paths.append(cache_dir / "video" / video_name)
+        candidate_paths.append(cache_dir / video_name)
+        if source_stem:
+            candidate_paths.append(cache_dir / "video" / source_stem / video_name)
+
+    seen = set()
+    for candidate_path in candidate_paths:
+        if candidate_path in seen:
+            continue
+        seen.add(candidate_path)
+        if candidate_path.exists():
+            return [str(candidate_path)]
+
+    checked_paths = "\n".join(str(path) for path in candidate_paths)
+    sys.exit(f"video path for {video_name} does not exist, checked:\n{checked_paths}")
 
 
 def mlvu_doc_to_text(doc, lmms_eval_specific_kwargs=None):
-    # option_prompt="Carefully watch this video and pay attention to every detail. Based on your observations, select the best option that accurately addresses the question."
-    option_prompt = ""
-    question = doc["question"] + "\nOnly give the best option.\n"
-    full_prompt = option_prompt + "\n" + question + "\n" + "Best option: ("
+    question = doc["question"].strip()
+
+    option_prompt = (
+        "Respond with only the letter (A, B, C, or D) of the correct option.\n"
+    )
+
+    full_prompt = (
+        option_prompt
+        + "\n"
+        + question
+        + "\n"
+        + "Your answer must be exactly one character: A, B, C, or D.\n"
+        + "Answer:"
+    )
     return full_prompt
+
 
 
 def extract_characters_regex(s):
     s = s.strip()
-    if ")" in s:
-        index = s.index(")")
-        pred = s[index - 1 : index]
-        return pred
-    else:
-        return s
+    match = re.search(r"\(([A-Za-z])\)", s)
+    if match:
+        return match.group(1).upper()
+    match = re.search(r"\b([A-Za-z])\b", s)
+    if match:
+        return match.group(1).upper()
+    return s[:1].upper()
+
 
 
 def mlvu_process_results(doc, results):
@@ -71,7 +100,7 @@ def mlvu_process_results(doc, results):
     # print("****************",pred)
     pred_ans = extract_characters_regex(pred)
 
-    task_type = doc["task_type"]
+    task_type = doc.get("task_type")
     data_dict = {"question_id": doc["question"], "task_type": task_type, "pred_answer": pred_ans, "answer": doc["answer"]}
 
     return {f"mlvu_percetion_score": data_dict}
@@ -84,7 +113,7 @@ def mlvu_aggregate_results(results):
     Returns:
         A score
     """
-    category2score = {}
+    category2score = defaultdict(lambda: {"correct": 0, "answered": 0})
     for task_type in TASK_TYPES:
         category2score[task_type] = {"correct": 0, "answered": 0}
 
@@ -93,13 +122,10 @@ def mlvu_aggregate_results(results):
         category2score[task_type]["answered"] += 1
         category2score[task_type]["correct"] += result["pred_answer"] == result["answer"]
 
-    for task_cate in TASK_TYPES:
-        total_correct = 0
-        total_answered = 0
-        for k, v in category2score.items():
-            if task_cate in k:
-                total_correct += v["correct"]
-                total_answered += v["answered"]
+    task_types = TASK_TYPES + [task_type for task_type in category2score.keys() if task_type not in TASK_TYPES]
+    for task_cate in task_types:
+        total_correct = category2score[task_cate]["correct"]
+        total_answered = category2score[task_cate]["answered"]
         eval_logger.info(f"Evaluation on Task Categories: {task_cate}: {100 * total_correct / total_answered if total_answered > 0 else 0 : .1f}%")
 
     total_correct = 0

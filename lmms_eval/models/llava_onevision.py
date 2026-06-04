@@ -85,11 +85,15 @@ class Llava_OneVision(lmms):
         mm_spatial_pool_mode: Optional[str] = "bilinear",
         token_strategy: Optional[str] = "single",  # could be "single" or "multiple", "multiple" denotes adding multiple <image> tokens for each frame
         video_decode_backend: str = "decord",
+        use_topk: bool = False,
         **kwargs,
     ) -> None:
         super().__init__()
         # Do not use kwargs for now
         assert kwargs == {}, f"Unexpected kwargs: {kwargs}"
+
+
+        self.use_topk = use_topk
 
         accelerator_kwargs = InitProcessGroupKwargs(timeout=timedelta(weeks=52))
         accelerator = Accelerator(kwargs_handlers=[accelerator_kwargs])
@@ -372,6 +376,23 @@ class Llava_OneVision(lmms):
         spare_frames = vr.get_batch(frame_idx).asnumpy()
         return spare_frames  # (frames, height, width, channels)
 
+
+    def load_video_frame_idx(self, video_path, max_frames_num, frame_index):
+        if type(video_path) == str:
+            vr = VideoReader(video_path, ctx=cpu(0))
+        else:
+            vr = VideoReader(video_path[0], ctx=cpu(0))
+        total_frame_num = len(vr)
+        if len(frame_index) >= max_frames_num:
+            frame_idx = frame_index[:max_frames_num]
+            frame_idx = sorted(frame_idx)
+            frame_idx = [int(i) for i in frame_idx]
+        else:
+            uniform_sampled_frames = np.linspace(0, total_frame_num - 1, max_frames_num, dtype=int)
+            frame_idx = uniform_sampled_frames.tolist()
+        spare_frames = vr.get_batch(frame_idx).asnumpy()
+        return spare_frames  # (frames, height, width, channels)
+
     def generate_until(self, requests: List[Instance]) -> List[str]:
         res = []
 
@@ -447,10 +468,14 @@ class Llava_OneVision(lmms):
                     elif type(visual[0]) == str:  # For video task
                         image_tensor = []
                         try:
-                            if self.video_decode_backend == "decord":
-                                frames = self.load_video(visual, self.max_frames_num)
-                            elif self.video_decode_backend == "pyav":
-                                frames = read_video_pyav(visual[0], num_frm=self.max_frames_num)
+                            if self.use_topk:
+                                frame_index = self.task_dict[task][split][batched_doc_id[0]]['frame_idx']
+                                frames = self.load_video_frame_idx(visual, self.max_frames_num, frame_index)
+                            else:
+                                if self.video_decode_backend == "decord":
+                                    frames = self.load_video(visual, self.max_frames_num)
+                                elif self.video_decode_backend == "pyav":
+                                    frames = read_video_pyav(visual[0], num_frm=self.max_frames_num)
                             frames = self._image_processor.preprocess(frames, return_tensors="pt")["pixel_values"].half().cuda()
                             image_tensor.append(frames)
                         except Exception as e:
@@ -543,12 +568,12 @@ class Llava_OneVision(lmms):
                 raise e
 
             text_outputs = [response.strip() for response in text_outputs]
+            print("text_outputs",text_outputs)
             res.extend(text_outputs)
             self.cache_hook.add_partial("generate_until", (context, gen_kwargs), text_outputs)
             pbar.update(1)
             # reorder this group of results back to original unsorted form
         res = re_ords.get_original(res)
-
         pbar.close()
         return res
 
@@ -756,6 +781,5 @@ class Llava_OneVision(lmms):
             pbar.update(1)
             # reorder this group of results back to original unsorted form
         res = re_ords.get_original(res)
-
         pbar.close()
         return res

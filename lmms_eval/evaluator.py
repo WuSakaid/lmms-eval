@@ -20,6 +20,7 @@ from tqdm import tqdm
 import lmms_eval.api
 import lmms_eval.api.metrics
 import lmms_eval.api.registry
+from lmms_eval.api.task import Task
 from lmms_eval.evaluator_utils import (
     consolidate_group_results,
     consolidate_results,
@@ -181,7 +182,7 @@ def simple_evaluate(
 
     # helper function to recursively apply config overrides to leaf subtasks, skipping their constituent groups.
     # (setting of num_fewshot ; bypassing metric calculation ; setting fewshot seed)
-    def _adjust_config(task_dict):
+    def _adjust_config(task_dict): #作用：命令行参数优先级 > YAML 默认参数
         adjusted_task_dict = {}
         for task_name, task_obj in task_dict.items():
             if isinstance(task_obj, dict):
@@ -410,7 +411,7 @@ def evaluate(
             task_group_alias[group_name] = configs[task_name]["group_alias"]
 
         limit = get_sample_size(task, limit)
-        task.build_all_requests(
+        task.build_all_requests( #task.build_all_requests,按卡来进行数据分片。
             limit=limit,
             rank=lm.rank,
             world_size=lm.world_size,
@@ -430,7 +431,9 @@ def evaluate(
             reqtype = instance.request_type
             requests[reqtype].append(instance)
 
-        if lm.world_size > 1:
+        if lm.world_size > 1:  #涉及多卡并行要求大家“同进退”。
+            #如果卡 A 有 10 个题，卡 B 只有 9 个，卡 A 做第 10 题时,卡B没事干会导致程序卡死。
+            #这里计算出差值，给题目少的显卡塞几个“占位符”（通常是重复最后一个请求），强行凑成一样多。
             instances_rnk = torch.tensor(len(task._instances), device=lm.device)
             gathered_item = lm.accelerator.gather(instances_rnk).cpu().detach().numpy().tolist()
             # "multiple_choice" task types dispatch (several) "loglikelihood" request types
@@ -453,9 +456,9 @@ def evaluate(
             for _ in range(padding_requests[reqtype]):
                 cloned_reqs.extend([req] * req.repeats)
 
-        # run requests through model
+        # run requests through model  
         resps = getattr(lm, reqtype)(cloned_reqs)  # Choiszt run generate until
-
+        # equal to 等价于调用 lm.generate_until(cloned_reqs)
         # put responses from model into a list of length K for each request.
         for x, req in zip(resps, cloned_reqs):
             req.resps.append(x)

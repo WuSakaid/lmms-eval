@@ -1,8 +1,9 @@
-dataset_path: sy1998/temp
+dataset_path: ./datasets/MLVU
 dataset_kwargs:
-  token: True
-  cache_dir: mlvu
-  video: True
+  data_files: {"test" : include_frame_idx.json}
+  token: False
+  cache_dir: MLVU
+  video: False
 generation_kwargs:
   max_new_tokens: 16
   temperature: 0
@@ -22,6 +23,5 @@ metric_list:
   - metric: mlvu_percetion_score
     aggregation: !function utils.mlvu_aggregate_results
     higher_is_better: true
-
 
 
