@@ -5,10 +5,10 @@ from pathlib import Path
 import yaml
 from loguru import logger as eval_logger
 
-hf_home = os.getenv("HF_HOME", "./~/.cache/huggingface")
+# hf_home = os.getenv("HF_HOME", "./~/.cache/huggingface")
 # hf_home="/share/junjie/shuyan/lmms-eval/~/.cache/huggingface"
-base_cache_dir = os.path.expanduser(hf_home)
-
+# base_cache_dir = os.path.expanduser(hf_home)
+base_cache_dir = './datasets/'
 
 with open(Path(__file__).parent / "mlvu_dev.yaml", "r") as f:
     raw_data_dev = f.readlines()

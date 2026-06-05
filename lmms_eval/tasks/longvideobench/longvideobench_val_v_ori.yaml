@@ -6,7 +6,7 @@ dataset_kwargs:
   force_download: False
   local_files_only: False
   # From_YouTube: True
-task: longvideobench_val_v
+task: longvideobench_val_v_ori
 test_split: validation
 doc_to_visual: !function utils.longvideobench_doc_to_visual_v
 doc_to_text: !function utils.longvideobench_doc_to_text

@@ -4,7 +4,7 @@ import random
 import re
 from collections import defaultdict
 from pathlib import Path
-
+import numpy as np
 import torch
 import yaml
 from decord import cpu,VideoReader
@@ -186,24 +186,61 @@ def get_multi_choice_info(options):
 
 def parse_multi_choice_response(response, all_choices, index2ans=None):
     """
-    Same as original LongVideoBench paper (from author Haoning Wu), if parsing failed, it will assign a random choice to model.
+    Parse the prediction from the generated response.
+    Return the predicted index e.g., A, B, C, D.
+    https://github.com/MMMU-Benchmark/MMMU/blob/51ce7f3e829c16bb44bc5445782686b4c3508794/eval/eval_utils.py#L10
     """
-    s = response.strip()
-    
-    match = re.search(r"\(([A-Za-z])\)", s)
-    if match:
-        char = match.group(1).upper()
-        if char in all_choices:  
-            return char
+    for char in [",", ".", "!", "?", ";", ":", "'"]:
+        response = response.strip(char)
+    response = " " + response + " "  # add space to avoid partial match
+
+    index_ans = True
+    ans_with_brack = False
+    candidates = []
+
+    # if response:
+    #     candidates.append(random.choice(all_choices))
+
+    for choice in all_choices:  # e.g., (A) (B) (C) (D)
+        if f"({choice})" in response:
+            candidates.append(choice)
+            ans_with_brack = True
+
+    if len(candidates) == 0:
+        for choice in all_choices:  # e.g., A B C D
+            if f"{choice} " in response:
+                candidates.append(choice)
+
+    if len(candidates) == 0:
+        for choice in all_choices:  # e.g., A. B. C. D.
+            if f"{choice}." in response:
+                candidates.append(choice)
 
 
-    matches = re.finditer(r"\b([A-Za-z])\b", s)
-    for m in matches:
-        char = m.group(1).upper()
-        if char in all_choices:  
-            return char
+    if len(candidates) == 0:  # still not get answer, randomly choose one.
+        pred_index = random.choice(all_choices)
+    elif len(candidates) > 1:
+        start_indexes = []
+        if index_ans:
+            if ans_with_brack:
+                for can in candidates:
+                    index = response.rfind(f"({can})")
+                    start_indexes.append(index)  # -1 will be ignored anyway
+                # start_indexes = [generated_response.index(f'({can})') for can in candidates]
+            else:
+                for can in candidates:
+                    index = response.rfind(f" {can} ")
+                    start_indexes.append(index)
+        else:
+            for can in candidates:
+                index = response.lower().rfind(index2ans[can].lower())
+                start_indexes.append(index)
+        # get the last one
+        pred_index = candidates[np.argmax(start_indexes)]
+    else:  # if only one candidate, use it.
+        pred_index = candidates[0]
 
-    return random.choice(all_choices)
+    return pred_index
 
 
 def evaluate_longvideobench(samples):

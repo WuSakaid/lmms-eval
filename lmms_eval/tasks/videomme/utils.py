@@ -73,10 +73,12 @@ replace_prompt = " Please answer yes or no."
 
 #     config = yaml.safe_load("".join(safe_data))
 
-hf_home = os.getenv("HF_HOME", "~/.cache/huggingface/")
+# hf_home = os.getenv("HF_HOME", "~/.cache/huggingface/")
 # cache_dir = os.path.join(hf_home, cache_dir)
 # base_cache_dir = config["dataset_kwargs"]["cache_dir"]
-base_cache_dir = os.path.expanduser(hf_home)
+
+# base_cache_dir = os.path.expanduser(hf_home)
+base_cache_dir = './datasets/'
 with open(Path(__file__).parent / "videomme.yaml", "r") as f:
     raw_data = f.readlines()
     safe_data = []
@@ -216,11 +218,16 @@ def videomme_doc_to_text_subtitle(doc, lmms_eval_specific_kwargs=None):
                 subtitle_text = "\n".join(textlist)
         else:
             if "frame_num" in lmms_eval_specific_kwargs:
-                frame_num = lmms_eval_specific_kwargs["frame_num"]
+                # frame_num = lmms_eval_specific_kwargs["frame_num"]
+                frame_num = doc['frame_num']
                 subtitle_by_frame, total_frame = extract_subtitles(video_path, subtitle_path)
                 if frame_num == -1:
                     frame_num = total_frame
-                uniform_sampled_frames = np.linspace(0, total_frame - 1, frame_num, dtype=int).tolist()
+                if doc['use_topk']:
+                    uniform_sampled_frames = doc['frame_idx'][:frame_num]
+                    uniform_sampled_frames = sorted(uniform_sampled_frames)
+                else:
+                    uniform_sampled_frames = np.linspace(0, total_frame - 1, frame_num, dtype=int).tolist()
 
                 subtitle_by_frame_idx = []
                 for frame_idx in uniform_sampled_frames:
