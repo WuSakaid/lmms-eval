@@ -1142,15 +1142,26 @@ class ConfigurableTask(Task):
         else:
             load_dataset_kwargs = dict(dataset_kwargs) if dataset_kwargs is not None else {}
             load_dataset_cache_dir = load_dataset_kwargs.pop("cache_dir", resolved_dataset_cache_dir)
-            self.dataset = datasets.load_dataset(
-                path=self.DATASET_PATH,
-                name=self.DATASET_NAME,
-                cache_dir=load_dataset_cache_dir,
-                download_mode=datasets.DownloadMode.REUSE_DATASET_IF_EXISTS,
-                download_config=download_config,
-                num_proc=1,
-                **load_dataset_kwargs,
-            )
+            if "data_files" in load_dataset_kwargs:
+                self.dataset = datasets.load_dataset(
+                    path=self.DATASET_PATH,
+                    data_files=load_dataset_kwargs.pop("data_files"),
+                    cache_dir=load_dataset_cache_dir,
+                    download_mode="force_redownload",
+                    download_config=download_config,
+                    num_proc=1,
+                    **load_dataset_kwargs,
+                )
+            else:
+                self.dataset = datasets.load_dataset(
+                    path=self.DATASET_PATH,
+                    name=self.DATASET_NAME,
+                    cache_dir=load_dataset_cache_dir,
+                    download_mode=datasets.DownloadMode.REUSE_DATASET_IF_EXISTS,
+                    download_config=download_config,
+                    num_proc=1,
+                    **load_dataset_kwargs,
+                )
 
         if self.config.process_docs is not None:
             for split in self.dataset:
