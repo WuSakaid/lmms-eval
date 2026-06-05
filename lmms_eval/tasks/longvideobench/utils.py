@@ -7,7 +7,7 @@ from pathlib import Path
 
 import torch
 import yaml
-from decord import cpu
+from decord import cpu,VideoReader
 from loguru import logger as eval_logger
 from PIL import Image
 
@@ -127,13 +127,13 @@ def _resolve_dataset_dir(task_yaml_name, subdir_key, default_subdir):
 
 
 def longvideobench_doc_to_text(doc, lmms_eval_specific_kwargs):
-    candidates = []
+    # candidates = []
 
-    for i in range(5):
-        candidate = doc.get(f"option{i}")
-        if candidate != "N/A":
-            candidates.append(candidate)
-
+    # for i in range(5):
+    #     candidate = doc.get(f"option{i}")
+    #     if candidate != "N/A":
+    #         candidates.append(candidate)
+    candidates = doc['candidates']
     question = doc["question"] + "\n" + "\n".join([". ".join([chr(ord("A") + i), candidate]) for i, candidate in enumerate(candidates)])
     pre_prompt = lmms_eval_specific_kwargs["pre_prompt"]
     post_prompt = lmms_eval_specific_kwargs["post_prompt"]
@@ -184,33 +184,26 @@ def get_multi_choice_info(options):
     return index2ans, all_choices
 
 
-def parse_multi_choice_response(response, all_choices, index2ans):
+def parse_multi_choice_response(response, all_choices, index2ans=None):
     """
-    Changed from MMMU-style complex parsing into simple parsing.
-    Fixed to avoid 'D. A book' be parsed as A.
     Same as original LongVideoBench paper (from author Haoning Wu), if parsing failed, it will assign a random choice to model.
     """
     s = response.strip()
-    answer_prefixes = [
-        "The best answer is",
-        "The correct answer is",
-        "The answer is",
-        "The answer",
-        "The best option is",
-        "The correct option is",
-        "Best answer:",
-        "Best option:",
-    ]
-    for answer_prefix in answer_prefixes:
-        s = s.replace(answer_prefix, "")
+    
+    match = re.search(r"\(([A-Za-z])\)", s)
+    if match:
+        char = match.group(1).upper()
+        if char in all_choices:  
+            return char
 
-    if len(s.split()) > 10 and not re.search("[ABCDE]", s):
-        return random.choice(all_choices)
 
-    matches = re.search(r"[ABCDE]", s)
-    if matches is None:
-        return random.choice(all_choices)
-    return matches[0]
+    matches = re.finditer(r"\b([A-Za-z])\b", s)
+    for m in matches:
+        char = m.group(1).upper()
+        if char in all_choices:  
+            return char
+
+    return random.choice(all_choices)
 
 
 def evaluate_longvideobench(samples):
@@ -272,7 +265,7 @@ def longvideobench_process_results(doc, results):
         all_choices.append(chr(ord("A") + i))
 
     parsed_pred = parse_multi_choice_response(pred, all_choices, index2ans)
-    id = doc["id"]
+    id = doc["video_id"]
     lvb_acc = {"id": id, "duration_group": doc["duration_group"], "question_category": doc["question_category"], "answer": chr(ord("A") + doc["correct_choice"]), "parsed_pred": parsed_pred}
     return {
         "lvb_acc": lvb_acc,
