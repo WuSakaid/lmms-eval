@@ -1,27 +1,33 @@
-import os
 import re
 from pathlib import Path
 
-import yaml
-
-hf_home = os.getenv("HF_HOME", "~/.cache/huggingface/")
-base_cache_dir = os.path.expanduser(hf_home)
-with open(Path(__file__).parent / "lvbench.yaml", "r") as f:
-    raw_data = f.readlines()
-    safe_data = []
-    for i, line in enumerate(raw_data):
-        # remove function definition since yaml load cannot handle it
-        if "!function" not in line:
-            safe_data.append(line)
-cache_name = yaml.safe_load("".join(safe_data))["dataset_kwargs"]["cache_dir"]
+# hf_home = os.getenv("HF_HOME", "~/.cache/huggingface/")
+# base_cache_dir = os.path.expanduser(hf_home)
+base_cache_dir = Path("./datasets/")
 
 
 def lvbench_doc_to_visual(doc):
-    cache_dir = os.path.join(base_cache_dir, cache_name)
-    video_path = doc["video_path"]
-    assert os.path.exists(os.path.join(cache_dir, video_path))
-    video_path = os.path.join(cache_dir, video_path)
-    return [video_path]
+    video_name = doc.get("video_path") or doc.get("video_name")
+    if not video_name:
+        raise KeyError("LVBench doc must contain either 'video_path' or 'video_name'")
+
+    video_path = Path(video_name)
+    candidate_paths = []
+    cache_dirs = [base_cache_dir / "LVBench"]
+    for cache_dir in cache_dirs:
+        candidate_paths.append(cache_dir / video_path)
+        candidate_paths.append(cache_dir / "videos" / video_path.name)
+
+    seen = set()
+    for candidate_path in candidate_paths:
+        if candidate_path in seen:
+            continue
+        seen.add(candidate_path)
+        if candidate_path.exists():
+            return [str(candidate_path)]
+
+    checked_paths = "\n".join(str(path) for path in candidate_paths)
+    raise FileNotFoundError(f"video path for {video_name} does not exist, checked:\n{checked_paths}")
 
 
 def lvbench_doc_to_text(doc, lmms_eval_specific_kwargs=None):
@@ -41,8 +47,10 @@ def extract_characters_regex(s):
         "The correct answer is",
         "The answer is",
         "The answer",
-        "The best option is" "The correct option is",
-        "Best answer:" "Best option:",
+        "The best option is",
+        "The correct option is",
+        "Best answer:",
+        "Best option:",
     ]
     for answer_prefix in answer_prefixes:
         s = s.replace(answer_prefix, "")

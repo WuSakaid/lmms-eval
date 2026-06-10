@@ -53,12 +53,20 @@ def mlvu_doc_to_visual_test(doc):
 
 
 def mlvu_doc_to_text(doc, lmms_eval_specific_kwargs=None):
-    if lmms_eval_specific_kwargs is None:
-        lmms_eval_specific_kwargs = {}
-    question = doc["question"]
-    pre_prompt = lmms_eval_specific_kwargs.get("pre_prompt", "")
-    post_prompt = lmms_eval_specific_kwargs.get("post_prompt", "")
-    full_prompt = pre_prompt + question + post_prompt
+    question = doc["question"].strip()
+
+    option_prompt = (
+        "Respond with only the letter (A, B, C, or D) of the correct option.\n"
+    )
+
+    full_prompt = (
+        option_prompt
+        + "\n"
+        + question
+        + "\n"
+        + "Your answer must be exactly one character: A, B, C, or D.\n"
+        + "Answer:"
+    )
     return full_prompt
 
 
