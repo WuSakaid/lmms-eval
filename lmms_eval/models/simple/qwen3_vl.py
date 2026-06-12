@@ -48,6 +48,7 @@ class Qwen3_VL(lmms):
         system_prompt: Optional[str] = "You are a helpful assistant.",
         interleave_visuals: Optional[bool] = False,
         reasoning_prompt: Optional[str] = None,
+        use_topk: bool = False,
         **kwargs,
     ) -> None:
         super().__init__()
@@ -86,6 +87,7 @@ class Qwen3_VL(lmms):
         self.min_pixels = min_pixels
         self.max_num_frames = max_num_frames
         self.fps = fps
+        self.use_topk = use_topk
 
         if reasoning_prompt:
             self.reasoning_prompt = reasoning_prompt.replace("\\n", "\n")
@@ -170,11 +172,32 @@ class Qwen3_VL(lmms):
                 new_list.append(j)
         return new_list
 
-    def _subsample_video_inputs(self, video_inputs, video_metadatas=None) -> None:
+    def _subsample_video_inputs(self, video_inputs, video_metadatas=None, topk_video_metadatas=None) -> None:
         if video_inputs is None:
             return
 
         for index, video_input in enumerate(video_inputs):
+            if topk_video_metadatas is not None and index < len(topk_video_metadatas) and topk_video_metadatas[index] is not None:
+                if video_metadatas is not None and index < len(video_metadatas):
+                    video_metadata = video_metadatas[index]
+                    topk_video_metadata = topk_video_metadatas[index]
+                    frame_indices = list(topk_video_metadata["frames_indices"])
+                    total_frames = video_input.shape[0]
+                    if len(frame_indices) < total_frames:
+                        frame_indices.extend([frame_indices[-1]] * (total_frames - len(frame_indices)))
+                    elif len(frame_indices) > total_frames:
+                        frame_indices = frame_indices[:total_frames]
+
+                    if isinstance(video_metadata, dict):
+                        video_metadata["frames_indices"] = frame_indices
+                        video_metadata["fps"] = topk_video_metadata["fps"]
+                        video_metadata["total_num_frames"] = topk_video_metadata["total_num_frames"]
+                    else:
+                        video_metadata.frames_indices = np.asarray(frame_indices)
+                        video_metadata.fps = topk_video_metadata["fps"]
+                        video_metadata.total_num_frames = topk_video_metadata["total_num_frames"]
+                continue
+
             total_frames = video_input.shape[0]
             indices = np.linspace(0, total_frames - 1, self.max_num_frames, dtype=int)
             indices = np.unique(indices)
@@ -251,29 +274,50 @@ class Qwen3_VL(lmms):
                     contexts[i] = contexts[i].replace("<image>", "")
 
             batched_messages = []
-            for i, context in enumerate(contexts):
+            topk_video_metadatas = []
+            topk_video_metadata_key = "_lmms_eval_topk_metadata"
+            for sample_idx, context in enumerate(contexts):
                 if "<image>" in context:
                     context = context.replace("<image>", "")
 
                 message = [{"role": "system", "content": self.system_prompt}]
                 if self.reasoning_prompt:
                     context = context.strip() + self.reasoning_prompt
-                    contexts[i] = context
+                    contexts[sample_idx] = context
 
                 processed_visuals = []
-                if visual_list[i] is not None:
-                    for visual in visual_list[i]:
+                if visual_list[sample_idx] is not None:
+                    doc = self.task_dict[task[sample_idx]][split[sample_idx]][doc_id[sample_idx]]
+                    for visual in visual_list[sample_idx]:
                         if isinstance(visual, str) and visual.endswith((".mp4", ".avi", ".mov")):  # Video file
-                            vr = decord.VideoReader(visual)
-                            first_frame = vr[0].asnumpy()
-                            height, width = first_frame.shape[:2]
-                            # max_pixels = height * width
+                            topk_video_metadata = None
+                            if self.use_topk:
+                                frame_idx = doc.get("frame_idx")
+                                if frame_idx is None:
+                                    raise ValueError("use_topk=True requires `frame_idx` in the task document")
+                                selected_frame_idx = [int(idx) for idx in frame_idx[: self.max_num_frames]]
+                                if not selected_frame_idx:
+                                    raise ValueError("use_topk=True requires a non-empty frame_idx list")
+                                vr = decord.VideoReader(visual)
+                                video = [Image.fromarray(frame).convert("RGB") for frame in vr.get_batch(selected_frame_idx).asnumpy()]
+                                topk_video_metadata = {
+                                    "frames_indices": selected_frame_idx,
+                                    "fps": vr.get_avg_fps(),
+                                    "total_num_frames": len(vr),
+                                }
+                            else:
+                                vr = decord.VideoReader(visual)
+                                first_frame = vr[0].asnumpy()
+                                height, width = first_frame.shape[:2]
+                                # max_pixels = height * width
+                                video = visual
                             processed_visuals.append(
                                 {
                                     "type": "video",
-                                    "video": visual,
+                                    "video": video,
                                     "max_pixels": self.max_pixels,
                                     "min_pixels": self.min_pixels,
+                                    topk_video_metadata_key: topk_video_metadata,
                                 }
                             )
                         elif isinstance(visual, Image.Image):  # Handle both single and multiple images
@@ -287,10 +331,11 @@ class Qwen3_VL(lmms):
                             )
 
                 if self.interleave_visuals is False:
+                    user_content = processed_visuals + [{"type": "text", "text": context}]
                     message.append(
                         {
                             "role": "user",
-                            "content": processed_visuals + [{"type": "text", "text": context}],
+                            "content": user_content,
                         }
                     )
                 else:  # currently support find <image x> in the context
@@ -314,6 +359,12 @@ class Qwen3_VL(lmms):
                             "content": content_parts,
                         }
                     )
+                    user_content = content_parts
+
+                video_content_parts = [part for part in user_content if isinstance(part, dict) and ("video" in part or part.get("type") == "video")]
+                topk_video_metadatas.extend([part.get(topk_video_metadata_key) for part in video_content_parts])
+                for part in video_content_parts:
+                    part.pop(topk_video_metadata_key, None)
 
                 batched_messages.append(message)
             texts = self.processor.apply_chat_template(batched_messages, tokenize=False, add_generation_prompt=True)
@@ -327,7 +378,7 @@ class Qwen3_VL(lmms):
             if video_inputs is not None:
                 video_inputs, video_metadatas = zip(*video_inputs)
                 video_inputs, video_metadatas = list(video_inputs), list(video_metadatas)
-                self._subsample_video_inputs(video_inputs, video_metadatas)
+                self._subsample_video_inputs(video_inputs, video_metadatas, topk_video_metadatas)
             if self.batch_size > 1:
                 inputs = self.processor(
                     text=texts,

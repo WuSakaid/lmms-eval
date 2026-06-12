@@ -56,12 +56,34 @@ class _FakeFrame:
         return np.zeros((2, 2, 3), dtype=np.uint8)
 
 
+class _FakeBatch:
+    def __init__(self, indices):
+        self.indices = indices
+
+    def asnumpy(self):
+        frames = []
+        for index in self.indices:
+            frame = np.zeros((2, 2, 3), dtype=np.uint8)
+            frame[:, :, 0] = index
+            frames.append(frame)
+        return np.stack(frames, axis=0)
+
+
 class _FakeVideoReader:
     def __init__(self, path):
         self.path = path
 
     def __getitem__(self, index):
         return _FakeFrame()
+
+    def __len__(self):
+        return 100
+
+    def get_avg_fps(self):
+        return 25.0
+
+    def get_batch(self, indices):
+        return _FakeBatch(indices)
 
 
 class _VideoMetadata:
@@ -82,6 +104,7 @@ class TestQwen3VLSimple(unittest.TestCase):
         model.system_prompt = "You are a helpful assistant."
         model.interleave_visuals = False
         model.reasoning_prompt = None
+        model.use_topk = False
         model.batch_size_per_gpu = 1
         model.use_cache = False
         model.device_map = "cpu"
@@ -137,6 +160,52 @@ class TestQwen3VLSimple(unittest.TestCase):
         self.assertEqual(video_inputs[1].shape[0], 3)
         self.assertEqual(video_metadatas[0]["frames_indices"], [0, 2, 4])
         self.assertEqual(video_metadatas[1]["frames_indices"], [10, 12, 15])
+
+    def test_generate_until_uses_topk_frames_without_sorting(self):
+        model = self._make_model(max_num_frames=3)
+        model.use_topk = True
+        model.task_dict = {"demo_task": {"test": [{"id": 0, "frame_idx": [7, 2, 9, 1]}]}}
+        metadata = {"frames_indices": [0, 1, 2, 3]}
+        video_tensor = torch.arange(16, dtype=torch.float32).reshape(4, 4)
+        request = types.SimpleNamespace(
+            args=("Describe the video", {}, lambda doc: ["demo.mp4"], 0, "demo_task", "test"),
+        )
+
+        def fake_process_vision_info(messages, **kwargs):
+            video = messages[0][1]["content"][0]["video"]
+            self.assertEqual([frame.getpixel((0, 0))[0] for frame in video], [7, 2, 9])
+            return None, [(video_tensor.clone(), metadata)], {"do_sample_frames": False}
+
+        with (
+            patch("lmms_eval.models.simple.qwen3_vl.process_vision_info", side_effect=fake_process_vision_info),
+            patch(
+                "lmms_eval.models.simple.qwen3_vl.decord.VideoReader",
+                _FakeVideoReader,
+            ),
+        ):
+            result = model.generate_until([request])
+
+        self.assertEqual(result, ["final answer"])
+        self.assertEqual(metadata["frames_indices"], [7, 2, 9, 9])
+        self.assertEqual(metadata["fps"], 25.0)
+        self.assertEqual(metadata["total_num_frames"], 100)
+
+    def test_generate_until_topk_requires_frame_idx(self):
+        model = self._make_model(max_num_frames=3)
+        model.use_topk = True
+        request = types.SimpleNamespace(
+            args=("Describe the video", {}, lambda doc: ["demo.mp4"], 0, "demo_task", "test"),
+        )
+
+        with (
+            patch("lmms_eval.models.simple.qwen3_vl.process_vision_info"),
+            patch(
+                "lmms_eval.models.simple.qwen3_vl.decord.VideoReader",
+                _FakeVideoReader,
+            ),
+            self.assertRaisesRegex(ValueError, "requires `frame_idx`"),
+        ):
+            model.generate_until([request])
 
 
 if __name__ == "__main__":
