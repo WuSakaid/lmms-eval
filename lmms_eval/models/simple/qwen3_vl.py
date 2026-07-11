@@ -1,3 +1,4 @@
+import os
 import re
 from typing import List, Optional, Tuple, Union
 
@@ -19,7 +20,7 @@ from lmms_eval import utils
 from lmms_eval.api.instance import Instance
 from lmms_eval.api.model import lmms
 from lmms_eval.api.registry import register_model
-from lmms_eval.imports import optional_import
+from lmms_eval.imports import optional_import  
 
 process_vision_info, _has_qwen_vl = optional_import("qwen_vl_utils", "process_vision_info")
 if not _has_qwen_vl:
@@ -30,19 +31,26 @@ if not _has_qwen_vl:
 class Qwen3_VL(lmms):
     """
     Qwen3_VL Model
-    "https://huggingface.co/Qwen/Qwen3-VL-4B-Instruct"
+    "https://huggingface.co/Qwen/Qwen3-VL-8B-Instruct"
     """
+
+    QWEN3_IMAGE_PATCH_SIZE = 16
+    QWEN3_SPATIAL_MERGE_SIZE = 2
+    QWEN3_FRAME_FACTOR = 2
+    QWEN3_VIDEO_MAX_TOKEN_NUM = 768
+    QWEN3_MODEL_SEQ_LEN = 128000
+    QWEN3_VIDEO_SEQ_RATIO = 0.9
 
     def __init__(
         self,
-        pretrained: str = "Qwen/Qwen3-VL-4B-Instruct",
+        pretrained: str = "Qwen/Qwen3-VL-8B-Instruct",
         device: Optional[str] = "cuda",
         device_map: Optional[str] = "auto",
         batch_size: Optional[Union[int, str]] = 1,
         use_cache=True,
         attn_implementation: Optional[str] = None,
         min_pixels: int = 256 * 28 * 28,
-        max_pixels: int = 1605632,
+        max_pixels: int = 786432,
         max_num_frames: int = 32,
         fps: Optional[float] = None,
         system_prompt: Optional[str] = "You are a helpful assistant.",
@@ -172,6 +180,35 @@ class Qwen3_VL(lmms):
                 new_list.append(j)
         return new_list
 
+    def _get_video_max_pixels(self, num_frames: int) -> int:
+        if num_frames <= 0:
+            raise ValueError(f"num_frames must be positive, got {num_frames}")
+
+        image_factor = self.QWEN3_IMAGE_PATCH_SIZE * self.QWEN3_SPATIAL_MERGE_SIZE
+        video_frame_max_pixels = self.QWEN3_VIDEO_MAX_TOKEN_NUM * image_factor * image_factor
+        model_seq_len = int(float(os.environ.get("MODEL_SEQ_LEN", self.QWEN3_MODEL_SEQ_LEN)))
+        total_pixels = model_seq_len * image_factor * image_factor * self.QWEN3_VIDEO_SEQ_RATIO
+        max_pixels_limit = min(
+            video_frame_max_pixels,
+            total_pixels / num_frames * self.QWEN3_FRAME_FACTOR,
+        )
+        max_pixels_limit = max(max_pixels_limit, int(self.min_pixels * 1.05))
+
+        return int(min(self.max_pixels, max_pixels_limit))
+
+    def _ceil_by_frame_factor(self, num_frames: int) -> int:
+        return ((num_frames + self.QWEN3_FRAME_FACTOR - 1) // self.QWEN3_FRAME_FACTOR) * self.QWEN3_FRAME_FACTOR
+
+    def _floor_by_frame_factor(self, num_frames: int) -> int:
+        return (num_frames // self.QWEN3_FRAME_FACTOR) * self.QWEN3_FRAME_FACTOR
+
+    def _get_video_num_frames(self, total_frames: int) -> int:
+        if total_frames < self.QWEN3_FRAME_FACTOR:
+            raise ValueError(f"total_frames must be at least {self.QWEN3_FRAME_FACTOR}, got {total_frames}")
+
+        requested_frames = min(self.max_num_frames, total_frames)
+        return max(self.QWEN3_FRAME_FACTOR, self._floor_by_frame_factor(requested_frames))
+
     def _subsample_video_inputs(self, video_inputs, video_metadatas=None, topk_video_metadatas=None) -> None:
         if video_inputs is None:
             return
@@ -291,6 +328,7 @@ class Qwen3_VL(lmms):
                     for visual in visual_list[sample_idx]:
                         if isinstance(visual, str) and visual.endswith((".mp4", ".avi", ".mov")):  # Video file
                             topk_video_metadata = None
+                            video_num_frames = self.max_num_frames
                             if self.use_topk:
                                 frame_idx = doc.get("frame_idx")
                                 if frame_idx is None:
@@ -298,6 +336,7 @@ class Qwen3_VL(lmms):
                                 selected_frame_idx = [int(idx) for idx in frame_idx[: self.max_num_frames]]
                                 if not selected_frame_idx:
                                     raise ValueError("use_topk=True requires a non-empty frame_idx list")
+                                video_num_frames = self._ceil_by_frame_factor(len(selected_frame_idx))
                                 vr = decord.VideoReader(visual)
                                 video = [Image.fromarray(frame).convert("RGB") for frame in vr.get_batch(selected_frame_idx).asnumpy()]
                                 topk_video_metadata = {
@@ -307,19 +346,19 @@ class Qwen3_VL(lmms):
                                 }
                             else:
                                 vr = decord.VideoReader(visual)
-                                first_frame = vr[0].asnumpy()
-                                height, width = first_frame.shape[:2]
-                                # max_pixels = height * width
+                                video_num_frames = self._get_video_num_frames(len(vr))
                                 video = visual
-                            processed_visuals.append(
-                                {
-                                    "type": "video",
-                                    "video": video,
-                                    "max_pixels": self.max_pixels,
-                                    "min_pixels": self.min_pixels,
-                                    topk_video_metadata_key: topk_video_metadata,
-                                }
-                            )
+
+                            video_content = {
+                                "type": "video",
+                                "video": video,
+                                "max_pixels": self._get_video_max_pixels(video_num_frames),
+                                "min_pixels": self.min_pixels,
+                                topk_video_metadata_key: topk_video_metadata,
+                            }
+                            if topk_video_metadata is None:
+                                video_content["nframes"] = video_num_frames
+                            processed_visuals.append(video_content)
                         elif isinstance(visual, Image.Image):  # Handle both single and multiple images
                             processed_visuals.append(
                                 {
@@ -371,7 +410,7 @@ class Qwen3_VL(lmms):
             image_inputs, video_inputs, video_kwargs = process_vision_info(
                 batched_messages,
                 return_video_kwargs=True,
-                image_patch_size=16,
+                image_patch_size=self.QWEN3_IMAGE_PATCH_SIZE,
                 return_video_metadata=True,
             )
             video_metadatas = None
