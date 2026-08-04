@@ -3,7 +3,6 @@ import json
 import os
 import re
 import sys
-from collections import defaultdict
 from pathlib import Path
 from typing import Dict, List, Optional, Union
 
@@ -113,8 +112,9 @@ def mlvu_aggregate_results(results):
     Returns:
         A score
     """
-    category2score = defaultdict(lambda: {"correct": 0, "answered": 0})
-    for task_type in TASK_TYPES:
+    task_types = {"anomaly_reco", "count", "ego", "needle", "order", "plotQA", "topic_reasoning"}
+    category2score = {}
+    for task_type in task_types:
         category2score[task_type] = {"correct": 0, "answered": 0}
 
     for result in results:
@@ -122,17 +122,26 @@ def mlvu_aggregate_results(results):
         category2score[task_type]["answered"] += 1
         category2score[task_type]["correct"] += result["pred_answer"] == result["answer"]
 
-    task_types = TASK_TYPES + [task_type for task_type in category2score.keys() if task_type not in TASK_TYPES]
+    task_category_scores = {}
+
+    # Calculate and log accuracy for each task category
     for task_cate in task_types:
-        total_correct = category2score[task_cate]["correct"]
-        total_answered = category2score[task_cate]["answered"]
-        eval_logger.info(f"Evaluation on Task Categories: {task_cate}: {100 * total_correct / total_answered if total_answered > 0 else 0 : .1f}%")
+        total_correct = 0
+        total_answered = 0
+        for k, v in category2score.items():
+            if task_cate in k:
+                total_correct += v["correct"]
+                total_answered += v["answered"]
+        accuracy = 100 * total_correct / total_answered if total_answered > 0 else 0
+        task_category_scores[task_cate] = accuracy
+        eval_logger.info(f"Evaluation on Task Categories: {task_cate}: {accuracy:.1f}%")
 
-    total_correct = 0
-    total_answered = 0
-    for k, v in category2score.items():
-        total_correct += v["correct"]
-        total_answered += v["answered"]
-    eval_logger.info(f"Overall Performance: {100 * total_correct / total_answered if total_answered > 0 else 0 : .1f}%")
+    # Calculate and log average accuracy across all task categories
+    if task_types:
+        average_accuracy = sum(task_category_scores.values()) / len(task_types)
+    else:
+        average_accuracy = 0
 
-    return 100 * total_correct / total_answered if total_answered > 0 else 0
+    eval_logger.info(f"Average Performance Across All Task Categories: {average_accuracy:.1f}%")
+
+    return average_accuracy
