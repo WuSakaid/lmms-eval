@@ -288,15 +288,24 @@ class LlavaVid(lmms):
         return encoding
 
     def load_image(self, image_path):
-        frame_files = [os.path.join(image_path, f) for f in os.listdir(image_path) if os.path.isfile(os.path.join(image_path, f))]
-        frame_files.sort()  # Ensure the frames are sorted if they are named sequentially
+        frame_files = [
+            os.path.join(image_path, name)
+            for name in os.listdir(image_path)
+            if os.path.isfile(os.path.join(image_path, name))
+        ]
+        # Zero-padded names keep lexical order equal to video order.
+        frame_files.sort()
 
-        # TODO: Hard CODE: Determine the indices for uniformly sampling 10 frames
-        num_frames_to_sample = 10
-
+        num_frames_to_sample = self.max_frames_num
         total_frames = len(frame_files)
-
-        sampled_indices = np.linspace(0, total_frames - 1, num_frames_to_sample, dtype=int)
+        if total_frames == 0:
+            return []
+        if total_frames <= num_frames_to_sample:
+            sampled_indices = range(total_frames)
+        else:
+            sampled_indices = np.linspace(
+                0, total_frames - 1, num_frames_to_sample, dtype=int
+            )
 
         # Read and store the sampled frames
         video = []
