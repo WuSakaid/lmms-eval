@@ -2,7 +2,7 @@ dataset_path: ./datasets/longvideobench
 dataset_kwargs:
   data_files: {"validation" : include_frame_idx.json}
   token: False
-  cache_dir: /wenzhiquan/wh/AKS-main/datasets/longvideobench
+  cache_dir: ./datasets/longvideobench
   force_download: False
   local_files_only: False
   # From_YouTube: True

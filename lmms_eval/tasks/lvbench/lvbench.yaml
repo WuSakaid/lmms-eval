@@ -3,7 +3,7 @@ dataset_kwargs:
   data_files: {"train" : include_frame_idx.json}
   token: False
   force_download: False
-  cache_dir: /wenzhiquan/wh/AKS-main/datasets/LVBench
+  cache_dir: ./datasets/LVBench
   local_files_only: False
   # video: True
   # From_YouTube: True
