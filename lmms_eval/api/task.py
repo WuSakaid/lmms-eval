@@ -1048,7 +1048,7 @@ class ConfigurableTask(Task):
         self.dataset = datasets.load_dataset(
             path=self.DATASET_PATH,
             data_files=dataset_kwargs['data_files'],
-            download_mode="force_redownload"
+            download_mode=datasets.DownloadMode.REUSE_DATASET_IF_EXISTS
         )
 
         if self.config.process_docs is not None:
