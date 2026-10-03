@@ -288,24 +288,15 @@ class LlavaVid(lmms):
         return encoding
 
     def load_image(self, image_path):
-        frame_files = [
-            os.path.join(image_path, name)
-            for name in os.listdir(image_path)
-            if os.path.isfile(os.path.join(image_path, name))
-        ]
-        # Zero-padded names keep lexical order equal to video order.
-        frame_files.sort()
+        frame_files = [os.path.join(image_path, f) for f in os.listdir(image_path) if os.path.isfile(os.path.join(image_path, f))]
+        frame_files.sort()  # Ensure the frames are sorted if they are named sequentially
 
-        num_frames_to_sample = self.max_frames_num
+        # TODO: Hard CODE: Determine the indices for uniformly sampling 10 frames
+        num_frames_to_sample = 10
+
         total_frames = len(frame_files)
-        if total_frames == 0:
-            return []
-        if total_frames <= num_frames_to_sample:
-            sampled_indices = range(total_frames)
-        else:
-            sampled_indices = np.linspace(
-                0, total_frames - 1, num_frames_to_sample, dtype=int
-            )
+
+        sampled_indices = np.linspace(0, total_frames - 1, num_frames_to_sample, dtype=int)
 
         # Read and store the sampled frames
         video = []
@@ -342,6 +333,15 @@ class LlavaVid(lmms):
         return spare_frames, frame_time, video_time
 
     def load_video_index(self, video_path, max_frames_num, fps, doc, force_sample=False):
+        if doc.get("video_frames") is not None:
+            return self.load_video_topk(
+                video_path,
+                max_frames_num,
+                doc["frame_idx"],
+                frames=doc["video_frames"],
+                fps=doc.get("video_fps"),
+                video_time=doc.get("video_duration"),
+            )
         if max_frames_num == 0:
             return np.zeros((1, 336, 336, 3))
         vr = VideoReader(video_path, ctx=cpu(0), num_threads=1)
@@ -361,8 +361,32 @@ class LlavaVid(lmms):
         spare_frames = vr.get_batch(frame_idx).asnumpy()
         # import pdb;pdb.set_trace()
         return spare_frames, frame_time, video_time
-    
-    
+
+    def load_video_topk(self, video_path, max_frames_num, frame_idx, *, frames=None, fps=None, video_time=None):
+        if max_frames_num == 0:
+            return np.zeros((1, 336, 336, 3)), "0.00s", 0
+        selected_frame_idx = [int(idx) for idx in frame_idx[:max_frames_num]]
+        if not selected_frame_idx:
+            raise ValueError("use_topk=True requires a non-empty frame_idx list")
+        if frames is not None:
+            # Frames are already selected and aligned with frame_idx. Preserve
+            # top-k ordering and the cap without opening or decoding the video.
+            if len(frames) != len(frame_idx):
+                raise ValueError("In-memory frames must align with frame_idx")
+            if fps is None or fps <= 0:
+                raise ValueError("In-memory frames require positive video FPS")
+            avg_fps = float(fps)
+            spare_frames = frames[:len(selected_frame_idx)]
+            if video_time is None:
+                video_time = (max(frame_idx) + 1) / avg_fps
+        else:
+            vr = VideoReader(video_path, ctx=cpu(0), num_threads=1)
+            avg_fps = vr.get_avg_fps()
+            video_time = len(vr) / avg_fps
+            spare_frames = vr.get_batch(selected_frame_idx).asnumpy()
+        frame_time = ",".join([f"{idx / avg_fps:.2f}s" for idx in selected_frame_idx])
+        return spare_frames, frame_time, video_time
+
     def my_load_video(self, video_path, max_frames_num, fps, force_sample=False):
         if max_frames_num == 0:
             return np.zeros((1, 336, 336, 3))
