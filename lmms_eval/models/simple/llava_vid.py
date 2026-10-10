@@ -352,18 +352,32 @@ class LlavaVid(lmms):
 
         return spare_frames, frame_time, video_time
 
-    def load_video_topk(self, video_path, max_frames_num, frame_idx):
+    def load_video_topk(self, video_path, max_frames_num, frame_idx, *, frames=None, fps=None, video_time=None):
         if max_frames_num == 0:
             return np.zeros((1, 336, 336, 3)), "0.00s", 0
-        vr = VideoReader(video_path, ctx=cpu(0), num_threads=1)
-        total_frame_num = len(vr)
-        avg_fps = vr.get_avg_fps()
-        video_time = total_frame_num / avg_fps
         selected_frame_idx = [int(idx) for idx in frame_idx[:max_frames_num]]
-        if not selected_frame_idx:
-            raise ValueError("use_topk=True requires a non-empty frame_idx list")
+        use_uniform_sample = len(selected_frame_idx) < max_frames_num
+        if frames is not None and not use_uniform_sample:
+            # Frames are already selected and aligned with frame_idx. Preserve
+            # top-k ordering and the cap without opening or decoding the video.
+            if len(frames) != len(frame_idx):
+                raise ValueError("In-memory frames must align with frame_idx")
+            if fps is None or fps <= 0:
+                raise ValueError("In-memory frames require positive video FPS")
+            avg_fps = float(fps)
+            spare_frames = frames[:len(selected_frame_idx)]
+            if video_time is None:
+                video_time = (max(frame_idx) + 1) / avg_fps
+        else:
+            vr = VideoReader(video_path, ctx=cpu(0), num_threads=1)
+            avg_fps = vr.get_avg_fps()
+            video_time = len(vr) / avg_fps
+            if use_uniform_sample:
+                # Selected in-memory frames cannot cover the full video, so
+                # decode the source when falling back to uniform sampling.
+                selected_frame_idx = np.linspace(0, len(vr) - 1, max_frames_num, dtype=int).tolist()
+            spare_frames = vr.get_batch(selected_frame_idx).asnumpy()
         frame_time = ",".join([f"{idx / avg_fps:.2f}s" for idx in selected_frame_idx])
-        spare_frames = vr.get_batch(selected_frame_idx).asnumpy()
         return spare_frames, frame_time, video_time
 
     def tok_decode(self, tokens):
@@ -476,6 +490,9 @@ class LlavaVid(lmms):
                                 visuals[0],
                                 self.max_frames_num,
                                 self.task_dict[task][split][doc_id]["frame_idx"],
+                                frames=self.task_dict[task][split][doc_id].get("video_frames"),
+                                fps=self.task_dict[task][split][doc_id].get("video_fps"),
+                                video_time=self.task_dict[task][split][doc_id].get("video_duration"),
                             )
                         else:
                             video, frame_time, video_time = self.load_video(
