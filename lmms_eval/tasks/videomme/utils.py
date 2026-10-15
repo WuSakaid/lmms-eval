@@ -329,66 +329,32 @@ def videomme_aggregate_results(results):
     Args:
         results: a list of values returned by process_results
     Returns:
-        A score
+        Overall score and statistics for each category
     """
-    category2score = {}
-
-    for video_type in VIDEO_TYPE:
-        for category in CATEGORIES:
-            for sub_category in SUB_CATEGORIES:
-                for task_category in TASK_CATEGORIES:
-                    key = f"{video_type}_{category}_{sub_category}_{task_category}"
-                    category2score[key] = {"correct": 0, "answered": 0}
-
-    for result in results:
-        video_type = result["duration"]
-        category = result["category"]
-        sub_category = result["sub_category"]
-        task_category = result["task_category"]
-        key = f"{video_type}_{category}_{sub_category}_{task_category}"
-        category2score[key]["answered"] += 1
-        category2score[key]["correct"] += result["pred_answer"] == result["answer"]
-
-    for video_type in VIDEO_TYPE:
-        total_correct = 0
-        total_answered = 0
-        for k, v in category2score.items():
-            if video_type in k:
-                total_correct += v["correct"]
-                total_answered += v["answered"]
-        eval_logger.info(f"Evaluation on video Type: {video_type}: {100 * total_correct / total_answered if total_answered > 0 else 0 : .1f}%")
-
-    for category in CATEGORIES:
-        total_correct = 0
-        total_answered = 0
-        for k, v in category2score.items():
-            if category in k:
-                total_correct += v["correct"]
-                total_answered += v["answered"]
-        eval_logger.info(f"Evaluation on Categories: {category}: {100 * total_correct / total_answered if total_answered > 0 else 0 : .1f}%")
-
-    for sub_cate in SUB_CATEGORIES:
-        total_correct = 0
-        total_answered = 0
-        for k, v in category2score.items():
-            if sub_cate in k:
-                total_correct += v["correct"]
-                total_answered += v["answered"]
-        eval_logger.info(f"Evaluation on Video Sub Categories: {sub_cate}: {100 * total_correct / total_answered if total_answered > 0 else 0 : .1f}%")
-
-    for task_cate in TASK_CATEGORIES:
-        total_correct = 0
-        total_answered = 0
-        for k, v in category2score.items():
-            if task_cate in k:
-                total_correct += v["correct"]
-                total_answered += v["answered"]
-        eval_logger.info(f"Evaluation on Task Categories: {task_cate}: {100 * total_correct / total_answered if total_answered > 0 else 0 : .1f}%")
-
+    dimensions = {
+        "duration": (VIDEO_TYPE, "video Type"),
+        "category": (CATEGORIES, "Categories"),
+        "sub_category": (SUB_CATEGORIES, "Video Sub Categories"),
+        "task_category": (TASK_CATEGORIES, "Task Categories"),
+    }
+    counts = {field: {category: {"correct": 0, "num": 0} for category in categories} for field, (categories, _) in dimensions.items()}
     total_correct = 0
-    total_answered = 0
-    for k, v in category2score.items():
-        total_correct += v["correct"]
-        total_answered += v["answered"]
-    eval_logger.info(f"Overall Performance: {100 * total_correct / total_answered if total_answered > 0 else 0 : .1f}%")
-    return 100 * total_correct / total_answered if total_answered > 0 else 0
+    for result in results:
+        correct = result["pred_answer"] == result["answer"]
+        total_correct += correct
+        for field in dimensions:
+            counts[field][result[field]]["num"] += 1
+            counts[field][result[field]]["correct"] += correct
+
+    subtask_results = {}
+    for field, (_, label) in dimensions.items():
+        subtask_results[field] = {}
+        for category, count in counts[field].items():
+            acc = count["correct"] / count["num"] if count["num"] > 0 else 0
+            subtask_results[field][category] = {"num": count["num"], "acc": round(acc, 5)}
+            eval_logger.info(f"Evaluation on {label}: {category}: {100 * acc : .1f}%")
+
+    score = 100 * total_correct / len(results) if results else 0
+    subtask_results["Overall"] = {"num": len(results), "acc": round(score / 100, 5)}
+    eval_logger.info(f"Overall Performance: {score : .1f}%")
+    return {"score": score, "subtask_results": subtask_results}
