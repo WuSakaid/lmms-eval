@@ -352,7 +352,7 @@ class LlavaVid(lmms):
 
         return spare_frames, frame_time, video_time
 
-    def load_video_topk(self, video_path, max_frames_num, frame_idx, *, frames=None, fps=None, video_time=None):
+    def load_video_topk(self, video_path, max_frames_num, frame_idx, *, frames=None, fps=None, total_frames=None, video_time=None):
         if max_frames_num == 0:
             return np.zeros((1, 336, 336, 3)), "0.00s", 0
         selected_frame_idx = [int(idx) for idx in frame_idx[:max_frames_num]]
@@ -366,15 +366,19 @@ class LlavaVid(lmms):
                 raise ValueError("In-memory frames require positive video FPS")
             avg_fps = float(fps)
             spare_frames = frames[:len(selected_frame_idx)]
-            if video_time is None:
-                video_time = (max(frame_idx) + 1) / avg_fps
+            if total_frames is not None:
+                if total_frames <= 0:
+                    raise ValueError("In-memory frames require positive video_total_frames")
+                video_time = total_frames / avg_fps
+            elif video_time is None or video_time <= 0:
+                # Selected frame indices cannot determine the source duration.
+                raise ValueError("In-memory frames require video_total_frames or positive video_duration")
         else:
             vr = VideoReader(video_path, ctx=cpu(0), num_threads=1)
             avg_fps = vr.get_avg_fps()
             video_time = len(vr) / avg_fps
             if use_uniform_sample:
-                # Selected in-memory frames cannot cover the full video, so
-                # decode the source when falling back to uniform sampling.
+                # Keep the existing full-video fallback when the group is short.
                 selected_frame_idx = np.linspace(0, len(vr) - 1, max_frames_num, dtype=int).tolist()
             spare_frames = vr.get_batch(selected_frame_idx).asnumpy()
         frame_time = ",".join([f"{idx / avg_fps:.2f}s" for idx in selected_frame_idx])
@@ -492,6 +496,7 @@ class LlavaVid(lmms):
                                 self.task_dict[task][split][doc_id]["frame_idx"],
                                 frames=self.task_dict[task][split][doc_id].get("video_frames"),
                                 fps=self.task_dict[task][split][doc_id].get("video_fps"),
+                                total_frames=self.task_dict[task][split][doc_id].get("video_total_frames"),
                                 video_time=self.task_dict[task][split][doc_id].get("video_duration"),
                             )
                         else:
@@ -548,7 +553,7 @@ class LlavaVid(lmms):
             qs = contexts
             # import pdb;pdb.set_trace()
             if self.add_time_instruction:
-                time_instruciton = f"The video lasts for {video_time:.2f} seconds, and {len(video)} frames are uniformly sampled from it. These frames are located at {frame_time}.Please answer the following questions related to this video."
+                time_instruciton = f"The video lasts for {video_time:.2f} seconds, and {len(video)} frames are sampled from it. These frames are located at {frame_time}.Please answer the following questions related to this video."
                 qs = f"{time_instruciton}\n{qs}"
             if self.model.config.mm_use_im_start_end:
                 qs = DEFAULT_IM_START_TOKEN + DEFAULT_IMAGE_TOKEN + DEFAULT_IM_END_TOKEN + "\n" + qs
