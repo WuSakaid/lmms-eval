@@ -108,7 +108,7 @@ def insert_subtitles_into_frames(frame_timestamps, subtitles, starting_timestamp
 
 
 def _load_task_config(task_yaml_name):
-    with open(Path(__file__).parent / task_yaml_name, "r") as f:
+    with open(Path(__file__).parent / task_yaml_name, "r", encoding="utf-8") as f:
         raw_data = f.readlines()
         safe_data = []
         for line in raw_data:
@@ -121,8 +121,14 @@ def _load_task_config(task_yaml_name):
 def _resolve_dataset_dir(task_yaml_name, subdir_key, default_subdir):
     task_config = _load_task_config(task_yaml_name)
     dataset_kwargs = task_config["dataset_kwargs"]
-    hf_home = os.path.expanduser(os.getenv("HF_HOME", "~/.cache/huggingface/"))
-    cache_dir = lmms_utils.resolve_cache_dir(dataset_kwargs["cache_dir"], base_dir=hf_home)
+    # Local annotations and their videos share the project-relative dataset
+    # directory. Hub tasks continue to resolve their cache under HF_HOME.
+    dataset_path = task_config["dataset_path"]
+    if dataset_path.startswith(("./", "../", ".\\", "..\\")) or os.path.isabs(dataset_path):
+        base_dir = None
+    else:
+        base_dir = os.path.expanduser(os.getenv("HF_HOME", "~/.cache/huggingface/"))
+    cache_dir = lmms_utils.resolve_cache_dir(dataset_kwargs["cache_dir"], base_dir=base_dir)
     return os.path.join(cache_dir, dataset_kwargs.get(subdir_key, default_subdir)), dataset_kwargs
 
 
@@ -139,8 +145,9 @@ def longvideobench_doc_to_text(doc, lmms_eval_specific_kwargs):
     post_prompt = lmms_eval_specific_kwargs["post_prompt"]
 
     if lmms_eval_specific_kwargs.get("insert_interleave_subtitles", False):
-        cache_dir, dataset_kwargs = _resolve_dataset_dir("longvideobench_val_i.yaml", "subtitle_subdir", "subtitles")
-        with open(os.path.join(cache_dir, doc["subtitle_path"])) as f:
+        task_yaml_name = lmms_eval_specific_kwargs.get("task_yaml_name", "longvideobench_val_i.yaml")
+        cache_dir, dataset_kwargs = _resolve_dataset_dir(task_yaml_name, "subtitle_subdir", "subtitles")
+        with open(os.path.join(cache_dir, doc["subtitle_path"]), encoding="utf-8") as f:
             subtitles = json.load(f)
 
         max_num_frames = dataset_kwargs.get("max_num_frames", 16)
@@ -153,14 +160,34 @@ def longvideobench_doc_to_text(doc, lmms_eval_specific_kwargs):
 
 
 def longvideobench_doc_to_visual_v(doc):
-    cache_dir, _ = _resolve_dataset_dir("longvideobench_val_v.yaml", "video_subdir", "videos/")
+    return _longvideobench_doc_to_visual_v(doc, "longvideobench_val_v.yaml")
+
+
+def longvideobench_doc_to_visual_v_ori(doc):
+    return _longvideobench_doc_to_visual_v(doc, "longvideobench_val_v_ori.yaml")
+
+
+def longvideobench_doc_to_visual_test_v(doc):
+    return _longvideobench_doc_to_visual_v(doc, "longvideobench_test_v.yaml")
+
+
+def _longvideobench_doc_to_visual_v(doc, task_yaml_name):
+    cache_dir, _ = _resolve_dataset_dir(task_yaml_name, "video_subdir", "videos/")
     video_path = doc["video_path"]
     video_path = os.path.join(cache_dir, video_path)
     return [video_path]
 
 
 def longvideobench_doc_to_visual_i(doc):
-    cache_dir, dataset_kwargs = _resolve_dataset_dir("longvideobench_val_i.yaml", "video_subdir", "videos/")
+    return _longvideobench_doc_to_visual_i(doc, "longvideobench_val_i.yaml")
+
+
+def longvideobench_doc_to_visual_test_i(doc):
+    return _longvideobench_doc_to_visual_i(doc, "longvideobench_test_i.yaml")
+
+
+def _longvideobench_doc_to_visual_i(doc, task_yaml_name):
+    cache_dir, dataset_kwargs = _resolve_dataset_dir(task_yaml_name, "video_subdir", "videos/")
     video_path = doc["video_path"]
     video_path = os.path.join(cache_dir, video_path)
     max_num_frames = dataset_kwargs.get("max_num_frames", 16)
@@ -292,14 +319,17 @@ def calculate_ins_level_acc(results):
 
 def longvideobench_process_results(doc, results):
     pred = results[0]
-    all_choices = []
-    index2ans = {}
-    for i in range(5):
-        option = doc.get(f"option{i}")
-        if option == "N/A":
-            break
-        index2ans[chr(ord("A") + i)] = option
-        all_choices.append(chr(ord("A") + i))
+    if "candidates" in doc:
+        index2ans, all_choices = get_multi_choice_info(doc["candidates"])
+    else:
+        all_choices = []
+        index2ans = {}
+        for i in range(5):
+            option = doc.get(f"option{i}")
+            if option is None or option == "N/A":
+                break
+            index2ans[chr(ord("A") + i)] = option
+            all_choices.append(chr(ord("A") + i))
 
     parsed_pred = parse_multi_choice_response(pred, all_choices, index2ans)
     id = doc["video_id"]
@@ -314,28 +344,28 @@ def longvideobench_process_results(doc, results):
 
 def longvideobench_aggregate_results(results):
     evaluation_result = {}
-    subset_to_eval_samples = defaultdict(list)
+    dimensions = ("duration_group", "question_category")
+    subset_to_eval_samples = {dimension: defaultdict(list) for dimension in dimensions}
     for result in results:
-        subset_to_eval_samples[result["duration_group"]].append(result)
-        subset_to_eval_samples[result["question_category"]].append(result)
-    for subset, sub_eval_samples in subset_to_eval_samples.items():
-        judge_dict, metric_dict = evaluate_longvideobench(sub_eval_samples)
-        metric_dict.update({"num_example": len(sub_eval_samples)})
-        evaluation_result[subset] = metric_dict
-    printable_results = {}
-
-    for cat_name, cat_results in evaluation_result.items():
-        printable_results[cat_name] = {
-            "num": int(cat_results["num_example"]),
-            "acc": round(cat_results["acc"], 5),
-        }
+        for dimension in dimensions:
+            subset_to_eval_samples[dimension][result[dimension]].append(result)
+    printable_results = {dimension: {} for dimension in dimensions}
+    for dimension, subsets in subset_to_eval_samples.items():
+        for subset, sub_eval_samples in subsets.items():
+            judge_dict, metric_dict = evaluate_longvideobench(sub_eval_samples)
+            metric_dict.update({"num_example": len(sub_eval_samples)})
+            evaluation_result[subset] = metric_dict
+            printable_results[dimension][subset] = {
+                "num": len(sub_eval_samples),
+                "acc": round(metric_dict["acc"], 5),
+            }
     all_ins_acc = calculate_ins_level_acc(evaluation_result)
     printable_results["Overall"] = {
-        "num": sum([cat_results["num_example"] for cat_results in evaluation_result.values()]),
+        "num": len(results),
         "acc": round(all_ins_acc, 5),
     }
     eval_logger.info(printable_results)
-    return printable_results["Overall"]["acc"]
+    return {"score": printable_results["Overall"]["acc"], "subtask_results": printable_results}
 
 
 def longvideobench_aggregate_results_for_submission(results, args):

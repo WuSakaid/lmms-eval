@@ -1,8 +1,9 @@
-dataset_path: sy1998/MLVU_dev
+dataset_path: ./datasets/MLVU
 dataset_kwargs:
-  token: True
-  cache_dir: mlvu
-  video: True
+  data_files: {"test": include_frame_idx.json}
+  token: False
+  cache_dir: MLVU
+  # Local videos are already prepared; omit the framework video-download flag.
 generation_kwargs:
   max_new_tokens: 16
   temperature: 0

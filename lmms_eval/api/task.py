@@ -1139,6 +1139,13 @@ class ConfigurableTask(Task):
             # using local task in offline environment, need to process the online dataset into local format via
             # `ds = load_datasets("lmms-lab/MMMU")`
             self.dataset = datasets.load_from_disk(dataset_path=self.DATASET_PATH)
+        elif dataset_kwargs is not None and "data_files" in dataset_kwargs and os.path.isdir(self.DATASET_PATH):
+            # Match AKS local loading; task cache_dir is used for media lookup.
+            self.dataset = datasets.load_dataset(
+                path=self.DATASET_PATH,
+                data_files=dataset_kwargs["data_files"],
+                download_mode=datasets.DownloadMode.REUSE_DATASET_IF_EXISTS,
+            )
         else:
             load_dataset_kwargs = dict(dataset_kwargs) if dataset_kwargs is not None else {}
             load_dataset_cache_dir = load_dataset_kwargs.pop("cache_dir", resolved_dataset_cache_dir)

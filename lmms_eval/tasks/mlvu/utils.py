@@ -1,55 +1,56 @@
 import os
-import sys
+import re
 from pathlib import Path
 
 import yaml
 from loguru import logger as eval_logger
 
-# hf_home = os.getenv("HF_HOME", "./~/.cache/huggingface")
-# hf_home="/share/junjie/shuyan/lmms-eval/~/.cache/huggingface"
-# base_cache_dir = os.path.expanduser(hf_home)
-base_cache_dir = './datasets/'
-
-with open(Path(__file__).parent / "mlvu_dev.yaml", "r") as f:
-    raw_data_dev = f.readlines()
-    safe_data_dev = []
-    for i, line in enumerate(raw_data_dev):
-        # remove function definition since yaml load cannot handle it
-        if "!function" not in line:
-            safe_data_dev.append(line)
-cache_name_dev = yaml.safe_load("".join(safe_data_dev))["dataset_kwargs"]["cache_dir"]
-cache_dir_dev = os.path.join(base_cache_dir, cache_name_dev)
+workspace_root = Path(__file__).resolve().parents[4]
+base_cache_dir = workspace_root / "datasets"
 
 
-with open(Path(__file__).parent / "mlvu_test.yaml", "r") as f:
-    raw_data_test = f.readlines()
-    safe_data_test = []
-    for i, line in enumerate(raw_data_test):
-        # remove function definition since yaml load cannot handle it
-        if "!function" not in line:
-            safe_data_test.append(line)
-cache_name_test = yaml.safe_load("".join(safe_data_test))["dataset_kwargs"]["cache_dir"]
-cache_dir_test = os.path.join(base_cache_dir, cache_name_test)
+def _resolve_dataset_dir(task_yaml_name):
+    with (Path(__file__).parent / task_yaml_name).open(encoding="utf-8") as handle:
+        config = yaml.safe_load("".join(line for line in handle if "!function" not in line))
+    dataset_kwargs = config["dataset_kwargs"]
+    cache_dir = Path(os.path.expanduser(os.path.expandvars(dataset_kwargs["cache_dir"])))
+    if cache_dir.is_absolute():
+        return cache_dir
+    if "data_files" in dataset_kwargs:
+        # AKS local annotations live alongside video/ and its source subfolders.
+        return (base_cache_dir if len(cache_dir.parts) == 1 else workspace_root) / cache_dir
+    return Path(os.path.expanduser(os.getenv("HF_HOME", "~/.cache/huggingface/"))) / cache_dir
+
+
+cache_dir_dev = _resolve_dataset_dir("mlvu_dev.yaml")
+cache_dir_test = _resolve_dataset_dir("mlvu_test.yaml")
+
+
+def _mlvu_doc_to_visual(doc, cache_dir):
+    video_name = doc.get("video_name")
+    if not video_name:
+        raise ValueError("MLVU documents require a video_name")
+    video_file = Path(os.path.expanduser(os.path.expandvars(video_name)))
+    if video_file.is_absolute() and video_file.is_file():
+        return [str(video_file)]
+
+    candidates = [cache_dir / "video" / video_file, cache_dir / video_file]
+    source_stem = Path(doc.get("source_file") or "").stem
+    if source_stem:
+        candidates.append(cache_dir / "video" / source_stem / video_file)
+    for candidate in candidates:
+        if candidate.is_file():
+            return [str(candidate)]
+    checked_paths = "\n".join(str(candidate) for candidate in candidates)
+    raise FileNotFoundError(f"MLVU video {video_name} does not exist; checked:\n{checked_paths}")
 
 
 def mlvu_doc_to_visual_dev(doc):
-    video_path = doc["video_name"]
-    video_path = os.path.join(cache_dir_dev, video_path)
-    if os.path.exists(video_path):
-        video_path = video_path
-    else:
-        sys.exit(f"video path:{video_path} does not exist, please check")
-    return [video_path]
+    return _mlvu_doc_to_visual(doc, cache_dir_dev)
 
 
 def mlvu_doc_to_visual_test(doc):
-    video_path = doc["video_name"]
-    video_path = os.path.join(cache_dir_test, video_path)
-    if os.path.exists(video_path):
-        video_path = video_path
-    else:
-        sys.exit(f"video path:{video_path} does not exist, please check")
-    return [video_path]
+    return _mlvu_doc_to_visual(doc, cache_dir_test)
 
 
 def mlvu_doc_to_text(doc, lmms_eval_specific_kwargs=None):
@@ -72,12 +73,10 @@ def mlvu_doc_to_text(doc, lmms_eval_specific_kwargs=None):
 
 def extract_characters_regex(s):
     s = s.strip()
-    if ")" in s:
-        index = s.index(")")
-        pred = s[index - 1 : index]
-        return pred
-    else:
-        return s
+    match = re.search(r"\(([A-D])\)", s, re.IGNORECASE)
+    if match is None:
+        match = re.search(r"\b([A-D])\b", s, re.IGNORECASE)
+    return match.group(1).upper() if match else s
 
 
 def mlvu_process_results(doc, results):
@@ -103,7 +102,7 @@ def mlvu_aggregate_results_dev(results):
     Args:
         results: a list of values returned by process_results
     Returns:
-        A score
+        The score and per-task statistics
     """
     TASK_TYPES = {"anomaly_reco", "count", "ego", "needle", "order", "plotQA", "topic_reasoning"}
     category2score = {}
@@ -116,6 +115,7 @@ def mlvu_aggregate_results_dev(results):
         category2score[task_type]["correct"] += result["pred_answer"] == result["answer"]
 
     task_category_scores = {}
+    subtask_results = {"task_type": {}}
 
     # Calculate and log accuracy for each task category
     for task_cate in TASK_TYPES:
@@ -127,6 +127,7 @@ def mlvu_aggregate_results_dev(results):
                 total_answered += v["answered"]
         accuracy = 100 * total_correct / total_answered if total_answered > 0 else 0
         task_category_scores[task_cate] = accuracy
+        subtask_results["task_type"][task_cate] = {"num": total_answered, "acc": round(accuracy / 100, 5)}
         eval_logger.info(f"Evaluation on Task Categories: {task_cate}: {accuracy:.1f}%")
 
     # Calculate and log average accuracy across all task categories
@@ -137,7 +138,9 @@ def mlvu_aggregate_results_dev(results):
 
     eval_logger.info(f"Average Performance Across All Task Categories: {average_accuracy:.1f}%")
 
-    return average_accuracy
+    # Overall accuracy follows the existing macro average across task types.
+    subtask_results["Overall"] = {"num": len(results), "acc": round(average_accuracy / 100, 5)}
+    return {"score": average_accuracy, "subtask_results": subtask_results}
 
 
 def mlvu_aggregate_results_test(results):
@@ -145,7 +148,7 @@ def mlvu_aggregate_results_test(results):
     Args:
         results: a list of values returned by process_results
     Returns:
-        A score
+        The score and per-task statistics
     """
     TASK_TYPES = {"anomaly_reco", "count", "ego", "needleQA", "order", "plotQA", "sportsQA", "topic_reasoning", "tutorialQA"}
     category2score = {}
@@ -158,6 +161,7 @@ def mlvu_aggregate_results_test(results):
         category2score[task_type]["correct"] += result["pred_answer"] == result["answer"]
 
     task_category_scores = {}
+    subtask_results = {"task_type": {}}
 
     # Calculate and log accuracy for each task category
     for task_cate in TASK_TYPES:
@@ -169,6 +173,7 @@ def mlvu_aggregate_results_test(results):
                 total_answered += v["answered"]
         accuracy = 100 * total_correct / total_answered if total_answered > 0 else 0
         task_category_scores[task_cate] = accuracy
+        subtask_results["task_type"][task_cate] = {"num": total_answered, "acc": round(accuracy / 100, 5)}
         eval_logger.info(f"Evaluation on Task Categories: {task_cate}: {accuracy:.1f}%")
 
     # Calculate and log average accuracy across all task categories
@@ -179,4 +184,6 @@ def mlvu_aggregate_results_test(results):
 
     eval_logger.info(f"Average Performance Across All Task Categories: {average_accuracy:.1f}%")
 
-    return average_accuracy
+    # Overall accuracy follows the existing macro average across task types.
+    subtask_results["Overall"] = {"num": len(results), "acc": round(average_accuracy / 100, 5)}
+    return {"score": average_accuracy, "subtask_results": subtask_results}
