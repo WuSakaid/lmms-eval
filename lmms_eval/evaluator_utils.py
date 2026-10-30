@@ -34,6 +34,7 @@ class TaskOutput:
             sample_len (int): The length of the samples.
             sample_metrics (defaultdict): The dictionary of samples' metrics.
             agg_metrics (defaultdict): The dictionary of aggregate metrics.
+            subtask_results (dict): Category statistics for each metric/filter pair.
 
         Methods:
             from_taskdict(cls, task_name: str, task):
@@ -68,6 +69,7 @@ class TaskOutput:
         self.sample_len = None
         self.sample_metrics = collections.defaultdict(list)
         self.agg_metrics = collections.defaultdict(list)
+        self.subtask_results = {}
         self.args = None
 
     @classmethod
@@ -112,6 +114,10 @@ class TaskOutput:
                     self.agg_metrics[metric_key] = agg_fn(items, args=self.task.args)
                 else:
                     self.agg_metrics[metric_key] = agg_fn(items)
+                aggregate_result = self.agg_metrics[metric_key]
+                if isinstance(aggregate_result, dict) and "subtask_results" in aggregate_result:
+                    self.agg_metrics[metric_key] = aggregate_result["score"]
+                    self.subtask_results[metric_key] = aggregate_result["subtask_results"]
                 self.sample_len = len(items)  # TODO: same sample size for each metric?
                 if isinstance(bootstrap_iters, int):
                     stderr_fn = stderr_for_metric(

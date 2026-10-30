@@ -603,6 +603,11 @@ def evaluate(
 
         results_dict = {
             "results": dict(results_agg.items()),
+            "subtask_results": {
+                task_output.task_name: task_output.subtask_results
+                for task_output in eval_tasks
+                if task_output.subtask_results
+            },
             **({"groups": dict(group_agg.items())} if (bool(group_agg) & show_group_table) else {}),
             "group_subtasks": dict(reversed(subtask_list.items())),
             "configs": dict(sorted(configs.items())),

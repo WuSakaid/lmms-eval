@@ -338,28 +338,28 @@ def longvideobench_process_results(doc, results):
 
 def longvideobench_aggregate_results(results):
     evaluation_result = {}
-    subset_to_eval_samples = defaultdict(list)
+    dimensions = ("duration_group", "question_category")
+    subset_to_eval_samples = {dimension: defaultdict(list) for dimension in dimensions}
     for result in results:
-        subset_to_eval_samples[result["duration_group"]].append(result)
-        subset_to_eval_samples[result["question_category"]].append(result)
-    for subset, sub_eval_samples in subset_to_eval_samples.items():
-        judge_dict, metric_dict = evaluate_longvideobench(sub_eval_samples)
-        metric_dict.update({"num_example": len(sub_eval_samples)})
-        evaluation_result[subset] = metric_dict
-    printable_results = {}
-
-    for cat_name, cat_results in evaluation_result.items():
-        printable_results[cat_name] = {
-            "num": int(cat_results["num_example"]),
-            "acc": round(cat_results["acc"], 5),
-        }
+        for dimension in dimensions:
+            subset_to_eval_samples[dimension][result[dimension]].append(result)
+    printable_results = {dimension: {} for dimension in dimensions}
+    for dimension, subsets in subset_to_eval_samples.items():
+        for subset, sub_eval_samples in subsets.items():
+            judge_dict, metric_dict = evaluate_longvideobench(sub_eval_samples)
+            metric_dict.update({"num_example": len(sub_eval_samples)})
+            evaluation_result[subset] = metric_dict
+            printable_results[dimension][subset] = {
+                "num": len(sub_eval_samples),
+                "acc": round(metric_dict["acc"], 5),
+            }
     all_ins_acc = calculate_ins_level_acc(evaluation_result)
     printable_results["Overall"] = {
-        "num": sum([cat_results["num_example"] for cat_results in evaluation_result.values()]),
+        "num": len(results),
         "acc": round(all_ins_acc, 5),
     }
     eval_logger.info(printable_results)
-    return printable_results["Overall"]["acc"]
+    return {"score": printable_results["Overall"]["acc"], "subtask_results": printable_results}
 
 
 def longvideobench_aggregate_results_for_submission(results, args):

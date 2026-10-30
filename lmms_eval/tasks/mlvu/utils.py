@@ -110,7 +110,7 @@ def mlvu_aggregate_results(results):
     Args:
         results: a list of values returned by process_results
     Returns:
-        A score
+        The score and per-task statistics
     """
     task_types = {"anomaly_reco", "count", "ego", "needle", "order", "plotQA", "topic_reasoning"}
     category2score = {}
@@ -123,6 +123,7 @@ def mlvu_aggregate_results(results):
         category2score[task_type]["correct"] += result["pred_answer"] == result["answer"]
 
     task_category_scores = {}
+    subtask_results = {"task_type": {}}
 
     # Calculate and log accuracy for each task category
     for task_cate in task_types:
@@ -134,6 +135,7 @@ def mlvu_aggregate_results(results):
                 total_answered += v["answered"]
         accuracy = 100 * total_correct / total_answered if total_answered > 0 else 0
         task_category_scores[task_cate] = accuracy
+        subtask_results["task_type"][task_cate] = {"num": total_answered, "acc": round(accuracy / 100, 5)}
         eval_logger.info(f"Evaluation on Task Categories: {task_cate}: {accuracy:.1f}%")
 
     # Calculate and log average accuracy across all task categories
@@ -144,4 +146,6 @@ def mlvu_aggregate_results(results):
 
     eval_logger.info(f"Average Performance Across All Task Categories: {average_accuracy:.1f}%")
 
-    return average_accuracy
+    # Overall accuracy follows the existing macro average across task types.
+    subtask_results["Overall"] = {"num": len(results), "acc": round(average_accuracy / 100, 5)}
+    return {"score": average_accuracy, "subtask_results": subtask_results}
