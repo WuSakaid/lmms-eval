@@ -140,10 +140,11 @@ class Qwen3_VL(lmms):
 
     @property
     def model(self):
-        # Unwrapping probes DeepSpeed; single-process inference needs no unwrap.
-        if self.accelerator.num_processes > 1:
+        # returns the model, unwrapping it if using Accelerate
+        if hasattr(self, "accelerator"):
             return self.accelerator.unwrap_model(self._model)
-        return self._model
+        else:
+            return self._model
 
     @property
     def eot_token_id(self):
