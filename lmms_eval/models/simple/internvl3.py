@@ -187,6 +187,8 @@ def load_video(
     input_size: int = 448,
     max_num: int = 1,
     num_segments: int = 32,
+    frame_indices: Optional[List[int]] = None,
+    frames: Optional[npt.NDArray[np.uint8]] = None,
 ) -> Tuple[torch.Tensor, List[int]]:
     """Load and preprocess a video into pixel values.
 
@@ -196,20 +198,27 @@ def load_video(
         input_size: Target size for image tiles.
         max_num: Maximum number of tiles per frame.
         num_segments: Number of frames to sample.
+        frame_indices: Original video frame indices, in input order. Overrides uniform sampling.
+        frames: Already decoded RGB frames in the selected frame order. Skips video decoding.
 
     Returns:
         Tuple of (pixel_values tensor, list of patch counts per frame).
     """
-    vr = VideoReader(video_path, ctx=cpu(0), num_threads=1)
-    max_frame = len(vr) - 1
-    fps = float(vr.get_avg_fps())
+    if frames is None:
+        vr = VideoReader(video_path, ctx=cpu(0), num_threads=1)
+        max_frame = len(vr) - 1
+        fps = float(vr.get_avg_fps())
+        if frame_indices is None:
+            frame_indices = get_index(bound, fps, max_frame, first_idx=0, num_segments=num_segments)
+        elif any(index < 0 or index > max_frame for index in frame_indices):
+            raise ValueError(f"Selected frame indices must be between 0 and {max_frame}: {video_path}")
+        frames = (vr[frame_index].asnumpy() for frame_index in frame_indices)
 
     pixel_values_list: List[torch.Tensor] = []
     num_patches_list: List[int] = []
     transform = build_transform(input_size=input_size)
-    frame_indices = get_index(bound, fps, max_frame, first_idx=0, num_segments=num_segments)
-    for frame_index in frame_indices:
-        img = Image.fromarray(vr[frame_index].asnumpy()).convert("RGB")
+    for frame in frames:
+        img = Image.fromarray(frame).convert("RGB")
         tiles = dynamic_preprocess(img, image_size=input_size, use_thumbnail=True, max_num=max_num)
         pixel_values = torch.stack([transform(tile) for tile in tiles])
         num_patches_list.append(pixel_values.shape[0])
@@ -231,9 +240,10 @@ class InternVL3(lmms):
         device: Device to use for inference.
         device_map: Device mapping strategy. Use "auto" for multi-GPU.
         batch_size: Batch size (must be 1 for this model).
-        num_frame: Number of frames to sample for video inputs.
+        num_frame: Number of uniform frames, or maximum selected frames when use_topk is enabled.
         max_num: Maximum number of image tiles.
         use_flash_attn: Whether to use flash attention.
+        use_topk: Read video frames from the task document's frame_idx instead of uniform sampling.
     """
 
     def __init__(
@@ -247,6 +257,7 @@ class InternVL3(lmms):
         max_num: int = 12,
         total_max_num: int = 64,
         use_flash_attn: bool = True,
+        use_topk: bool = False,
         **kwargs,
     ):
         super().__init__()
@@ -255,6 +266,7 @@ class InternVL3(lmms):
         self.num_frame = num_frame
         self.max_num = max_num
         self.total_max_num = total_max_num
+        self.use_topk = use_topk
 
         batch_size_int = int(batch_size)
         assert batch_size_int == 1, f"Batch size should be 1 for InternVL3, but got {batch_size_int}."
@@ -395,10 +407,12 @@ class InternVL3(lmms):
             for k in pop_keys:
                 gen_kwargs.pop(k)
 
-            visuals = [doc_to_visual(self.task_dict[task][split][doc_id])]
+            doc = self.task_dict[task][split][doc_id]
+            visuals = [doc_to_visual(doc)]
             visuals = self.flatten(visuals)
 
-            if self.modality == "image":
+            # Text-only clue review also reuses a model configured for video.
+            if self.modality == "image" or not visuals:
                 if visuals:
                     # Dynamic max_num calculation like VLMEvalKit:
                     # max_num = max(1, min(self.max_num, self.total_max_num // image_num))
@@ -449,13 +463,33 @@ class InternVL3(lmms):
             elif self.modality == "video":
                 assert len(visuals) == 1, f"Only one video is supported, but got {len(visuals)} videos."
                 video_path = visuals[0]
+                frame_indices = None
+                frames = None
+                if self.use_topk:
+                    frame_idx = doc.get("frame_idx")
+                    if frame_idx is None:
+                        raise ValueError("use_topk=True requires `frame_idx` in the task document")
+                    frame_indices = [int(index) for index in frame_idx[: self.num_frame]]
+                    if not frame_indices:
+                        raise ValueError("use_topk=True requires a non-empty frame_idx list")
+                    frames = doc.get("video_frames")
+                    if frames is not None:
+                        if len(frames) != len(frame_idx):
+                            raise ValueError("video_frames and frame_idx must contain the same number of frames")
+                        frames = frames[: len(frame_indices)]
 
                 # Dynamic max_num calculation like VLMEvalKit:
                 # For video, num_segments frames are extracted, so:
                 # max_num = max(1, min(self.max_num, self.total_max_num // num_segments))
                 dynamic_max_num = max(1, min(self.max_num, self.total_max_num // self.num_frame))
 
-                pixel_values, num_patches_list = load_video(video_path, num_segments=self.num_frame, max_num=dynamic_max_num)
+                pixel_values, num_patches_list = load_video(
+                    video_path,
+                    num_segments=self.num_frame,
+                    max_num=dynamic_max_num,
+                    frame_indices=frame_indices,
+                    frames=frames,
+                )
                 pixel_values = pixel_values.to(torch.bfloat16).to(self._device)
                 video_prefix = "".join([f"Frame{i + 1}: <image>\n" for i in range(len(num_patches_list))])
                 question = video_prefix + contexts
