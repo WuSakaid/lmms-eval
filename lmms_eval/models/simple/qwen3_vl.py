@@ -337,12 +337,24 @@ class Qwen3_VL(lmms):
                                 if not selected_frame_idx:
                                     raise ValueError("use_topk=True requires a non-empty frame_idx list")
                                 video_num_frames = self._ceil_by_frame_factor(len(selected_frame_idx))
-                                vr = decord.VideoReader(visual)
-                                video = [Image.fromarray(frame).convert("RGB") for frame in vr.get_batch(selected_frame_idx).asnumpy()]
+                                frames = doc.get("video_frames")
+                                if frames is None:
+                                    vr = decord.VideoReader(visual)
+                                    frames = vr.get_batch(selected_frame_idx).asnumpy()
+                                    video_fps = vr.get_avg_fps()
+                                    video_total_frames = len(vr)
+                                else:
+                                    if len(frames) != len(frame_idx):
+                                        raise ValueError("video_frames and frame_idx must contain the same number of frames")
+                                    # Shared frames already follow frame_idx order.
+                                    frames = frames[: len(selected_frame_idx)]
+                                    video_fps = doc["video_fps"]
+                                    video_total_frames = doc["video_total_frames"]
+                                video = [Image.fromarray(frame).convert("RGB") for frame in frames]
                                 topk_video_metadata = {
                                     "frames_indices": selected_frame_idx,
-                                    "fps": vr.get_avg_fps(),
-                                    "total_num_frames": len(vr),
+                                    "fps": video_fps,
+                                    "total_num_frames": video_total_frames,
                                 }
                             else:
                                 vr = decord.VideoReader(visual)
